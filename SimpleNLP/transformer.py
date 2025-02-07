@@ -1,231 +1,217 @@
 import numpy as np
 
-
-# Transformer based model
-class Transformer:
-    def __init__(self, vocab_size, n_embd=64, n_head=4, n_layer=4, block_size=128, dropout=0.0, learning_rate=1e-3):
-        self.vocab_size = vocab_size
-        self.n_embd = n_embd
-        self.n_head = n_head
-        self.n_layer = n_layer
-        self.block_size = block_size
-        self.learning_rate = learning_rate
-
-        # Initialize embeddings
-        self.token_embedding = np.random.randn(vocab_size, n_embd) * 0.01
-        self.position_embedding = np.random.randn(block_size, n_embd) * 0.01
-
-        # Transformer block
-        self.layers = [TransformerBlock(n_embd, n_head, dropout) for _ in range(n_layer)]
-
-        # Final layer norm and output projection
-        self.layer_norm = LayerNorm(n_embd)
-        self.lm_head = np.random.randn(n_embd, vocab_size) * 0.01
-
-    def forward(self, idx):
-        """
-        Forward propagation through the transformer model.
-        """
-        B, T = idx.shape
-
-        # Token + Positional embeddings
-        tok_emb = self.token_embedding[idx]  # (B, T, C)
-        pos_emb = self.position_embedding[np.arange(T)]  # (T, C)
-        x = tok_emb + pos_emb  # (B, T, C)
-
-        # Pass through transformer blocks
-        for layer in self.layers:
-            x = layer.forward(x)
-
-        # Layer normalization and projection
-        x = self.layer_norm.forward(x)
-        logits = np.dot(x, self.lm_head)  # (B, T, vocab_size)
-
-        return logits
-
-    def backward(self, idx, target):
-        """
-                Backpropagation for the transformer model.
-                """
-        B, T = idx.shape
-
-        # Forward pass to get logits
-        logits = self.forward(idx)  # (B, T, vocab_size)
-
-        # Compute softmax probabilities
-        probs = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
-        probs /= np.sum(probs, axis=-1, keepdims=True)
-
-        # Compute loss (cross-entropy)
-        loss = -np.log(probs[np.arange(B)[:, None], np.arange(T), target]).mean()
-
-        # Compute gradient of loss w.r.t logits
-        dlogits = probs
-        dlogits[np.arange(B)[:, None], np.arange(T), target] -= 1
-        dlogits /= B
-
-        # Backpropagate through lm_head
-        d_x = np.dot(dlogits, self.lm_head.T)
-        d_lm_head = np.dot(d_x.reshape(-1, self.n_embd).T, dlogits.reshape(-1, self.vocab_size))
-
-        # Backpropagate through transformer blocks
-        for layer in reversed(self.layers):
-            d_x = layer.backward(d_x)
-
-        # Backpropagate through embeddings
-        d_token_embedding = np.zeros_like(self.token_embedding)
-        np.add.at(d_token_embedding, idx, d_x)
-
-        # Gradient descent updates
-        self.lm_head -= self.learning_rate * d_lm_head
-        self.token_embedding -= self.learning_rate * d_token_embedding
-
-        return loss
-
-    def generate(self, seed_idx, max_new_tokens, temperature=0.8):
-        """
-        Generate text using the transformer model.
-        """
-        idx = np.array(seed_idx).reshape(1, -1)
-
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.block_size:]
-            logits = self.forward(idx_cond)
-
-            logits = logits[:, -1, :]
-            logits = logits / temperature
-
-            probs = np.exp(logits) / np.sum(np.exp(logits), axis=-1, keepdims=True)
-
-            idx_next = np.random.choice(range(self.vocab_size), p=probs.ravel())
-            idx = np.hstack((idx, np.array([[idx_next]])))
-
-        return idx
+# Hyperparameters
+block_size = 32
+n_embd = 64
+n_head = 4
+n_layer = 4
+dropout = 0.0
 
 
-class TransformerBlock:
-    """
-    A single transformer block with multi-head self-attention and feedforward layers.
-    """
-
-    def __init__(self, n_embd, n_head, dropout):
-        self.n_embd = n_embd
-        self.n_head = n_head
-        self.head_size = n_embd // n_head
-
-        self.mha = MultiHeadAttention(n_head, self.head_size, n_embd, dropout)
-        self.ffn = FeedForward(n_embd, dropout)
-        self.ln1 = LayerNorm(n_embd)
-        self.ln2 = LayerNorm(n_embd)
+class Layer_Norm:
+    def __init__(self, dim, eps=1e-5):
+        self.eps = eps
+        self.gamma = np.ones(dim)
+        self.beta = np.zeros(dim)
 
     def forward(self, x):
-        x = x + self.mha.forward(self.ln1.forward(x))
-        x = x + self.ffn.forward(self.ln2.forward(x))
-        return x
+        mean = np.mean(x, axis=-1, keepdims=True)
+        var = np.var(x, axis=-1, keepdims=True)
+        x_norm = (x - mean) / np.sqrt(var + self.eps)
+        return self.gamma * x_norm + self.beta
 
 
-class MultiHeadAttention:
-    """
-    Multi-head self-attention mechanism.
-    """
-
-    def __init__(self, num_heads, head_size, n_embd, dropout):
-        self.num_heads = num_heads
-        self.head_size = head_size
-        self.n_embd = n_embd
-
-        # Initialize weights
-        self.Wq = np.random.randn(n_embd, n_embd) * 0.01
-        self.Wk = np.random.randn(n_embd, n_embd) * 0.01
-        self.Wv = np.random.randn(n_embd, n_embd) * 0.01
-        self.Wo = np.random.randn(n_embd, n_embd) * 0.01
-
-        self.dropout = dropout
+class Attention:
+    """Single head attention"""
+    def __init__(self, n_embd, head_size, block_size):
+        self.key = np.random.randn(n_embd, head_size) * 0.02
+        self.query = np.random.randn(n_embd, head_size) * 0.02
+        self.value = np.random.randn(n_embd, head_size) * 0.02
+        self.tril = np.tril(np.ones((block_size, block_size)))
 
     def forward(self, x):
         B, T, C = x.shape
-
-        # Compute Q, K, V
-        Q = np.dot(x, self.Wq)  # (B, T, C)
-        K = np.dot(x, self.Wk)  # (B, T, C)
-        V = np.dot(x, self.Wv)  # (B, T, C)
+        k = x @ self.key  # (B, T, head_size)
+        q = x @ self.query  # (B, T, head_size)
 
         # Compute attention scores
-        scores = np.matmul(Q, K.transpose(0, 2, 1)) / np.sqrt(self.head_size)  # (B, T, T)
+        wei = q @ k.transpose(0, 2, 1) * (C ** -0.5)  # (B, T, T)
+        wei = wei * self.tril[:T, :T]  # (B, T, T)
+        wei = np.exp(wei) / np.sum(np.exp(wei), axis=-1, keepdims=True)  # softmax
 
-        # Casual mask: prevent attending to future tokens
-        mask = np.triu(np.ones((T, T)), k=1)  # For upper triangle in matrix
-        scores = np.where(mask == 1, -np.inf, scores)
+        # weighted aggregation
+        v = x @ self.value  # (B, T, head_size)
+        out = wei @ v  # (B, T, head_size)
+        return out
 
-        # Softmax and dropout
-        scores = np.exp(scores - np.max(scores, axis=-1, keepdims=True))
-        scores = scores / np.sum(scores, axis=-1, keepdims=True)
 
-        # Weighted sum of values
-        out = np.matmul(scores, V)  # (B,T,C)
-        out = np.dot(out, self.Wo)  # (B,T,C)
+class MultiHeadAttention:
+    def __init__(self, n_embd, n_head, block_size):
+        assert n_embd % n_head == 0
+        self.head_size = n_embd // n_head
+        self.heads = [Attention(n_embd, self.head_size, block_size) for _ in range(n_head)]
+        self.proj = np.random.randn(n_embd, n_embd) * 0.02
 
+    def forward(self, x):
+        out = np.concatenate([h.forward(x) for h in self.heads], axis=-1)
+        out = out @ self.proj
         return out
 
 
 class FeedForward:
-    """
-    A simple feedforward network with ReLU activation.
-    """
-
-    def __init__(self, n_embd, dropout):
-        self.W1 = np.random.randn(n_embd, 4 * n_embd) * 0.01
-        self.W2 = np.random.randn(4 * n_embd, n_embd) * 0.01
-        self.dropout = dropout
+    def __init__(self, n_embd):
+        self.W1 = np.random.randn(n_embd, 4 * n_embd) * 0.02
+        self.W2 = np.random.randn(4 * n_embd, n_embd) * 0.02
 
     def forward(self, x):
-        B, T, C = x.shape  # Extract batch, sequence length and channel
-
-        # Reshape x for maxtrix multiplication
-        x = x.reshape(B * T, C)  # Flatten sequence: (B*T, C)
-        x = np.dot(x, self.W1)  # (B*T, 256)
-        x = np.maximum(0, x)  # ReLU activation
-        x = np.dot(x, self.W2)  # (B*T, 64)
-
-        # Reshape back to (B,T,C)
-        x = x.reshape(B, T, C)
+        x = x @ self.W1
+        x = np.maximum(0, x)  # ReLU
+        x = x @ self.W2
         return x
 
 
-class LayerNorm:
-    """
-    Layer Normalization.
-    """
-
-    def __init__(self, n_embd, eps=1e-5):
-        self.eps = eps
-        self.gamma = np.ones((n_embd,))
-        self.beta = np.zeros((n_embd,))
+class TransformerBlock:
+    def __init__(self, n_embd, n_head, block_size):
+        self.sa = MultiHeadAttention(n_embd, n_head, block_size)
+        self.ffwd = FeedForward(n_embd)
+        self.ln1 = Layer_Norm(n_embd)
+        self.ln2 = Layer_Norm(n_embd)
 
     def forward(self, x):
-        mean = x.mean(axis=-1, keepdims=True)
-        std = x.std(axis=-1, keepdims=True)
-        return self.gamma * (x - mean) / (std + self.eps) + self.beta
+        x = x + self.sa.forward(self.ln1.forward(x))
+        x = x + self.ffwd.forward(self.ln2.forward(x))
+        return x
 
 
-# Example text corpus
-text = "This is the text generated with AI and thus it can only be generated by AI."
+class LanguageModel:
+    def __init__(self, vocab_size, block_size):
+        self.block_size = block_size
+        self.vocab_size = vocab_size
+        self.token_embedding = np.random.randn(vocab_size, n_embd) * 0.02
+        self.position_embedding = np.random.randn(block_size, n_embd) * 0.02
+        self.blocks = [TransformerBlock(n_embd, n_head, block_size) for _ in range(n_layer)]
+        self.ln_f = Layer_Norm(n_embd)
+        self.lm_head = np.random.randn(n_embd, vocab_size) * 0.02
 
-# Tokenization
-chars = sorted(list(set(text)))
-stoi = {ch: i for i, ch in enumerate(chars)}
-itos = {i: ch for i, ch in enumerate(chars)}
-vocab_size = len(chars)
+    def forward(self, idx):
+        B, T = idx.shape
 
-# Encode input text
-encoded_text = np.array([[stoi[ch] for ch in text[:32]]])
+        # Get embeddings
+        tok_emb = self.token_embedding[idx]  # (B,T,C)
+        pos_emb = self.position_embedding[:T]  # (T,C)
+        x = tok_emb + pos_emb  # (B,T,C)
 
-# Initialize model
-model = Transformer(vocab_size)
+        # Apply transformer blocks
+        for block in self.blocks:
+            x = block.forward(x)
 
-# Generate text
-generated_tokens = model.generate(encoded_text, max_new_tokens=100, temperature=0.7)
+        x = self.ln_f.forward(x)
+        logits = x @ self.lm_head  # (B,T,vocab_size)
+        return logits
 
-# Decode output
-generated_text = ''.join([itos[i] for i in generated_tokens[0]])
-print("Generated Text:\n", generated_text)
+    def generate(self, context, max_new_tokens, temperature=1.0):
+        for _ in range(max_new_tokens):
+            # Crop context if needed
+            context_cond = context[:, -self.block_size:]
+            # Get predictions
+            logits = self.forward(context_cond)
+            # Focus on last time step
+            logits = logits[:, -1, :] / temperature
+            # Apply softmax
+            probs = np.exp(logits) / np.sum(np.exp(logits), axis=-1, keepdims=True)
+            # Sample from distribution
+            idx_next = np.random.choice(len(probs[0]), p=probs[0])
+            # Append to the sequence
+            context = np.concatenate([context, np.array([[idx_next]])], axis=1)
+        return context
+
+
+def cross_entropy_loss(logits, targets):
+    """
+    Compute cross entropy loss
+    logits: (B*T, C)
+    targets: (B*T,)
+    """
+    B, T, C = logits.shape
+    logits = logits.reshape(-1, C)
+    targets = targets.reshape(-1)
+
+    # Compute softmax
+    exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+    probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+
+    # Compute cross entropy
+    log_probs = -np.log(probs[np.arange(len(targets)), targets])
+    loss = np.mean(log_probs)
+    return loss
+
+
+# Data loading and preprocessing
+def load_data(filename):
+    with open(filename, 'r', encoding='utf-8') as f:
+        text = f.read()
+
+    # Create vocabulary
+    chars = sorted(list(set(text)))
+    vocab_size = len(chars)
+    stoi = {ch: i for i, ch in enumerate(chars)}
+    itos = {i: ch for i, ch in enumerate(chars)}
+
+    # Encode text
+    encode = lambda s: [stoi[c] for c in s]
+    decode = lambda l: ''.join([itos[i] for i in l])
+
+    data = np.array(encode(text))
+    n = int(0.9 * len(data))
+    train_data = data[:n]
+    val_data = data[n:]
+
+    return train_data, val_data, encode, decode, vocab_size
+
+
+def get_batch(data, block_size, batch_size):
+    ix = np.random.randint(len(data) - block_size, size=batch_size)
+    x = np.stack([data[i:i + block_size] for i in ix])
+    y = np.stack([data[i + 1:i + block_size + 1] for i in ix])
+    return x, y
+
+
+# Training
+if __name__ == "__main__":
+    # Load and preprocess data
+    train_data, val_data, encode, decode, vocab_size = load_data('../../input.txt')
+
+    # Initialize model
+    model = LanguageModel(vocab_size, block_size)
+
+    # Training loop
+    for iter in range(max_iters):
+        if iter % eval_interval == 0:
+            print(f'step {iter}')
+
+        # Get batch
+        xb, yb = get_batch(train_data, block_size, batch_size)
+
+        # Forward pass
+        logits = model.forward(xb)
+        loss = cross_entropy_loss(logits, yb)
+
+        # Compute gradients (simplified)
+        B, T, C = logits.shape
+        grad_logits = np.zeros_like(logits)
+        grad_logits = grad_logits.reshape(-1, C)
+        grad_logits[np.arange(B * T), yb.reshape(-1)] = -1.0 / B / T
+        grad_logits = grad_logits.reshape(B, T, C)
+
+        # Update lm_head with proper broadcasting
+        grad_lm = np.mean(grad_logits.transpose(0, 2, 1) @ model.ln_f.forward(
+            model.blocks[-1].forward(model.token_embedding[xb] + model.position_embedding[:T])), axis=0)
+        model.lm_head -= learning_rate * grad_lm.T
+
+        if iter % eval_interval == 0:
+            print(f'step {iter}: loss {loss:.4f}')
+
+    # Generate text
+    context = np.zeros((1, 1), dtype=int)
+    generated_text = model.generate(context, max_new_tokens=500, temperature=0.8)
+    print(decode(generated_text[0].tolist()))

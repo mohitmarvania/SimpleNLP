@@ -1,6 +1,6 @@
 import regex
 import csv
-
+import pandas as pd
 
 def preprocess_text(text):
     """
@@ -15,60 +15,30 @@ def preprocess_text(text):
     return text
 
 
-def load_data(file_path, delimiter=',', has_header=True, classification=True):
+def load_twitter_data(file_path, sample_size=5000, random_state=42, delimiter=','):
     """
-    Loads data for text classification or text generation.
-
-    **Text Classification (CSV format)**
-    Expected format:
-    ```
-    text,label
-    "I love this movie!",positive
-    "This was terrible!",negative
-    ```
-
-    **Text Generation (Plain Text)**
-    Expected format:
-    ```
-    This is an example text for training a language model.
-    Another sentence continues here.
-    ```
+    Loads Twitter sentiment analysis dataset.
 
     Args:
-    - file_path (str): Path to the data file.
-    - delimiter (str): CSV delimiter (default: ',').
-    - has_header (bool): Whether the file has a header row (classification only).
-    - classification (bool): If `True`, loads labeled data; else, loads text for generation.
+    - file_path (str): Path to the CSV file.
+    - sample_size (str): Number of samples to use.
+    - delimiter (str): CSV delimiter (default: ',')
 
     Returns:
-    - If classification:
-      - texts (list): List of preprocessed text samples.
-      - labels (list): List of corresponding labels.
-    - If text generation:
-      - texts (list): A single string containing the full corpus.
-      - None (since no labels exist for generation tasks).
+    - texts (list): List of preprocessed tweets
+    - entities (list): List of entities
+    - labels (list): List of sentiment labels
     """
-    texts, labels = [], []
+    df = pd.read_csv(file_path, usecols=['Tweet_content', 'Entity', 'Sentiment'])
 
-    if classification:
-        # Load labeled classification data from CSV
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=delimiter)
-            if has_header:
-                next(reader)  # Skip header row
+    # Sample data if dataset is large
+    if len(df) > sample_size:
+        df = df.sample(n=sample_size, random_state=random_state)
 
-            for row in reader:
-                if len(row) < 2:
-                    continue  # Skip malformed rows
-                text, label = row[0], row[1]
-                texts.append(preprocess_text(text))
-                labels.append(label)
+    # Preprocess texts
+    processed_texts = []
+    for text, entity in zip(df['Tweet_content'], df['Entity']):
+        combined_text = f"{text} [Entity] {entity}"
+        processed_texts.append(preprocess_text(combined_text))
 
-        return texts, labels
-
-    else:
-        # Load raw text for text generation
-        with open(file_path, 'r', encoding='utf-8') as f:
-            texts = f.read().replace("\n", " ")  # Join all lines into one continuous text
-
-        return texts, None
+    return processed_texts, df['Entity'].tolist(), df['Sentiment'].tolist()
