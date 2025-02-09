@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 
 
-# Linear Regression Classifier
+# Logistic Regression Classifier
 class LogisticRegressionClassifier:
     def __init__(self):
         self.model = LogisticRegression(max_iter=1000)
